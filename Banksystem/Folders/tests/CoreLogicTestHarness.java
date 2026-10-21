@@ -1,0 +1,70 @@
+import java.time.LocalDateTime;
+import java.time.LocalDate;
+import java.lang.reflect.Field;
+import model.customer.Customer;
+import model.account.*;
+import model.transaction.Transaction;
+import enums.*;
+import service.GlobalData;
+import validation.InputValidator;
+
+public class CoreLogicTestHarness {
+ static int passed=0,failed=0;
+ static void test(String n,boolean ok){if(ok){passed++;System.out.println("PASS: "+n);}else{failed++;System.out.println("FAIL: "+n);}}
+ public static void main(String[] args) throws Exception {
+  test("valid accented/non-English name validation",InputValidator.isValidName("José Álvarez"));
+  test("invalid name digits rejected",!InputValidator.isValidName("Alice123"));
+  test("valid phone accepted",InputValidator.isValidPhoneNumber("+33 6 12 34 56 78"));
+  test("short phone rejected",!InputValidator.isValidPhoneNumber("123"));
+  test("valid email accepted",InputValidator.isValidEmail("alice@example.com"));
+  test("invalid email rejected",!InputValidator.isValidEmail("alice@invalid"));
+  LocalDateTime now=LocalDateTime.now();
+  Customer sourceOwner=new Customer("Source Owner","123456789","source@example.com",now);
+  Customer destOwner=new Customer("Destination Owner","123456780","dest@example.com",now);
+  SavingsAccount source=new SavingsAccount(sourceOwner,AccountType.SAVINGS,now,1000); sourceOwner.addAccount(source);
+  SavingsAccount destination=new SavingsAccount(destOwner,AccountType.SAVINGS,now,500); destOwner.addAccount(destination);
+  source.deposit(100);
+  test("savings deposit updates balance",Math.abs(source.getBalance()-1100)<0.00001);
+  source.withdraw(100);
+  test("savings withdrawal updates balance",Math.abs(source.getBalance()-1000)<0.00001);
+  double beforeInvalid=source.getBalance(); source.deposit(-10); source.withdraw(0);
+  test("invalid deposit/withdrawal do not change balance",Math.abs(source.getBalance()-beforeInvalid)<0.00001);
+  double srcBefore=source.getBalance(), destBefore=destination.getBalance();
+  source.transferOut(100,destination,"test transfer");
+  test("active transfer debits source",Math.abs(source.getBalance()-(srcBefore-100))<0.00001);
+  test("active transfer credits destination",Math.abs(destination.getBalance()-(destBefore+100))<0.00001);
+  SavingsAccount frozenDest=new SavingsAccount(destOwner,AccountType.SAVINGS,now,0); destOwner.addAccount(frozenDest); frozenDest.setAccountStatus(AccountStatus.FROZEN);
+  double sourceBeforePause=source.getBalance();
+  source.transferOut(50,frozenDest,"paused test");
+  test("transfer to frozen account debits source once",Math.abs(source.getBalance()-(sourceBeforePause-50))<0.00001);
+  test("transfer to frozen account leaves destination unchanged",Math.abs(frozenDest.getBalance())<0.00001);
+  Transaction paused=GlobalData.getAllTransactions().stream().filter(t->t.getDestinationAccount()==frozenDest && t.getTransactionStatus()==TransactionStatus.PAUSED).findFirst().orElse(null);
+  test("transfer to frozen account records PAUSED status",paused!=null);
+  frozenDest.activateAccount();
+  test("unfreezing completes paused transfer credit",Math.abs(frozenDest.getBalance()-50)<0.00001);
+  test("unfreezing does not debit source twice",Math.abs(source.getBalance()-(sourceBeforePause-50))<0.00001);
+  test("paused transaction becomes completed",paused!=null && paused.getTransactionStatus()==TransactionStatus.COMPLETED);
+  test("source and destination balances remain finite",Double.isFinite(source.getBalance())&&Double.isFinite(destination.getBalance())&&Double.isFinite(frozenDest.getBalance()));
+  Customer fdOwner=new Customer("Fixed Owner","123456781","fixed@example.com",now);
+  FixedDepositAccount fd=new FixedDepositAccount(fdOwner,AccountType.FIXED_DEPOSIT,1000,6,source,FixedDepositAccountType.CLOSE_AND_PAYOUT,now); fdOwner.addAccount(fd);
+  int txCountBeforeInvalidFd=GlobalData.getAllTransactions().size();
+  fd.deposit(-10); fd.deposit(Double.NaN); fd.withdraw(-10); fd.withdraw(Double.POSITIVE_INFINITY); fd.transferOut(-10,source); fd.transferOut(Double.NaN,source);
+  test("fixed deposit rejects invalid amounts without throwing",true);
+  test("fixed deposit invalid amounts do not create transactions",GlobalData.getAllTransactions().size()==txCountBeforeInvalidFd);
+  test("fixed deposit invalid amounts preserve balance",Math.abs(fd.getBalance()-1000)<0.00001);
+  CheckingAccount checking=new CheckingAccount(fdOwner,AccountType.CHECKING,1000,now); fdOwner.addAccount(checking);
+  checking.deposit(100); test("checking deposit updates balance",Math.abs(checking.getBalance()-1100)<0.00001);
+  checking.withdraw(100); test("checking withdrawal updates balance",Math.abs(checking.getBalance()-1000)<0.00001);
+  checking.applyFee(); test("checking fee reduces balance",Math.abs(checking.getBalance()-950)<0.00001);
+  CheckingAccount lowChecking=new CheckingAccount(fdOwner,AccountType.CHECKING,20,now); fdOwner.addAccount(lowChecking);
+  lowChecking.applyFee();
+  test("checking unpaid fee freezes account",lowChecking.getAccountStatus()==AccountStatus.FROZEN && lowChecking.getUnpaidFeeAmount()>0);
+  Field maturityDate=fd.getTerm().getClass().getDeclaredField("maturityDate"); maturityDate.setAccessible(true); maturityDate.set(fd.getTerm(),LocalDate.now().minusDays(1));
+  double linkedBeforeMaturity=source.getBalance();
+  fd.processEndOfMonth();
+  test("fixed deposit matured CLOSE_AND_PAYOUT closes account",fd.getAccountStatus()==AccountStatus.CLOSED && Math.abs(fd.getBalance())<0.00001);
+  test("fixed deposit maturity pays principal plus interest once",source.getBalance()>linkedBeforeMaturity+1000 && Math.abs(source.getBalance()-linkedBeforeMaturity-1018.75)<0.01);
+  test("fixed deposit moved to owner's closed accounts",fdOwner.getAllAccounts().contains(fd) && !fdOwner.getAccounts().contains(fd));
+  System.out.println("RESULT: passed="+passed+" failed="+failed);if(failed>0)System.exit(1);
+ }
+}

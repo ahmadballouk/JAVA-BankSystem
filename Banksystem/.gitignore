@@ -1,0 +1,18 @@
+# Java build output
+*.class
+out/
+build/
+target/
+
+# Runtime bank data (may contain private financial/customer data)
+data/
+Report/
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# Operating system files
+.DS_Store
+Thumbs.db
